@@ -1,224 +1,293 @@
-const express = require('express');
-const mysql = require('mysql');
-const bcrypt = require('bcrypt');
-const bodyParser = require('body-parser');
-const crypto = require('crypto');
-const jwt = require('jsonwebtoken');
+const express = require("express");
+const axios = require("axios");
+const dotenv = require("dotenv");
+dotenv.config();
 const app = express();
+app.use(express.json());
 
-app.use(bodyParser.json());
+const WORDPRESS_USERS_API_URL = process.env.WORDPRESS_USERS_API_URL;
+const WORDPRESS_AUTH_TOKEN_API_URL = process.env.WORDPRESS_AUTH_TOKEN_API_URL;
+const WORDPRESS_ADMIN_USERNAME = process.env.WORDPRESS_ADMIN_USERNAME;
+const WORDPRESS_ADMIN_PASSWORD = process.env.WORDPRESS_ADMIN_PASSWORD;
+const WOOCOMMERCE_CONSUMER_KEY = process.env.WOOCOMMERCE_CONSUMER_KEY;
+const WOOCOMMERCE_CONSUMER_SECREAT = process.env.WOOCOMMERCE_CONSUMER_SECREAT;
+const WEBSITE_URL = process.env.WEBSITE_URL;
 
-
-const db = mysql.createConnection({
-  host: 'localhost',
-  user: 'root',
-  password: '',
-  database: 'spring'
+app.get("/", (req, res) => {
+  res.send({ msg: "Home Page" });
 });
 
+const WooCommerceRestApi = require("@woocommerce/woocommerce-rest-api").default;
 
-db.connect((err) => {
-  if (err) throw err;
-  console.log('MySQL connected');
+const WooCommerce = new WooCommerceRestApi({
+  url: WEBSITE_URL,
+  consumerKey: WOOCOMMERCE_CONSUMER_KEY,
+  consumerSecret: WOOCOMMERCE_CONSUMER_SECREAT,
+  version: "wc/v3",
 });
 
-
-app.get('/', (req,res) => {
-    res.send("Welcome to Node Js With Wordpress");
-})
-
-// Registration 
-app.post('/register', async (req, res) => {
+// Register User
+app.post("/register", async (req, res) => {
   const { username, email, password } = req.body;
 
   try {
-    const checkUserQuery = 'SELECT * FROM wp_users WHERE user_login = ?';
-    const existingUser = await queryDB(checkUserQuery, [username]);
-    if (existingUser.length > 0) {
-      return res.status(400).json({ error: 'User already exists' });
-    }
-    
-    const hashedPassword = await bcrypt.hash(password, 10);
+    const authResponse = await axios.post(WORDPRESS_AUTH_TOKEN_API_URL, {
+      username: WORDPRESS_ADMIN_USERNAME,
+      password: WORDPRESS_ADMIN_PASSWORD,
+    });
 
-    const insertUserQuery = 'INSERT INTO wp_users (user_login, user_pass, user_email) VALUES (?, ?, ?)';
-    await queryDB(insertUserQuery, [username, hashedPassword, email]);
-    
-    const getUserDetailsQuery = 'SELECT * FROM wp_users WHERE user_login = ?';
-    const newUser = await queryDB(getUserDetailsQuery, [username]);
+    const authToken = authResponse.data.token;
 
-    const user = {
-      id: newUser[0].ID,
-      username: newUser[0].user_login,
-      email: newUser[0].user_email,
-
-    };
-    const token = await loginUser(user);
-
-    return res.status(200).json({ message: 'User registered successfully', token, user });
-  } catch (error) {
-    console.error('Error registering user:', error);
-    return res.status(500).json({ error: 'Internal server error' });
-  }
-});
-  
-  // Login function
-  async function loginUser(user) {
-    const secretKey = crypto.randomBytes(32).toString('hex');
-    try {
-      const token = jwt.sign({
-        id: user.ID,
-        username: user.user_login,
-        email: user.user_email,
-      }, secretKey, { expiresIn: '1h' });
-  
-      return token;
-    } catch (error) {
-      console.error('Error logging in user:', error);
-      throw error;
-    }
-}
-
-// Login endpoint
-app.post('/login', async (req, res) => {
-    const { username, password } = req.body; 
-    try {
-      const getUserQuery = 'SELECT * FROM wp_users WHERE user_login = ?';
-      const user = await queryDB(getUserQuery, [username]);
-      if (user.length === 0) {
-        return res.status(401).json({ error: 'Invalid username or password' });
+    const response = await axios.post(
+      WORDPRESS_USERS_API_URL,
+      { username, email, password },
+      {
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${authToken}`,
+        },
       }
-  
-      const hashedPassword = user[0].user_pass;
-      const passwordMatch = await bcrypt.compare(password, hashedPassword);
-      if (!passwordMatch) {
-        return res.status(401).json({ error: 'Invalid username or password' });
-      }
-  
-      const secretKey = crypto.randomBytes(32).toString('hex');
-  
-      const token = jwt.sign({
-        id: user[0].ID,
-        username: user[0].user_login,
-        email: user[0].user_email,
-      }, secretKey, { expiresIn: '1h' });
-  
-      return res.status(200).json({ message: 'Login successful', token, user: user[0] });
-    } catch (error) {
-      console.error('Error logging in:', error);
-      return res.status(500).json({ error: 'Internal server error' });
-    }
-});
-// Update user endpoint using PATCH method
-app.patch('/users/update/:id', async (req, res) => {
-  const userId = req.params.id;
-  const { username, email, password } = req.body;
-
-  try {
-    const getUserQuery = 'SELECT * FROM wp_users WHERE ID = ?';
-    const existingUser = await queryDB(getUserQuery, [userId]);
-    if (existingUser.length === 0) {
-      return res.status(404).json({ error: 'User not found' });
-    }
-    
-    const updateFields = {};
-    if (username) updateFields.user_login = username;
-    if (email) updateFields.user_email = email;
-    if (password) {
-      const hashedPassword = await bcrypt.hash(password, 10);
-      updateFields.user_pass = hashedPassword;
-    }
-    console.log("updated fields", updateFields);
-
-    const updateUserQuery = 'UPDATE wp_users SET ? WHERE ID = ?';
-    await queryDB(updateUserQuery, [updateFields, userId]);
-    
-    const updatedUser = await queryDB(getUserQuery, [userId]);
-      console.log("Updated User",updatedUser)
-    const user = {
-      id: updatedUser[0].ID,
-      username: updatedUser[0].user_login,
-      email: updatedUser[0].user_email,
-    };
-
-    return res.status(200).json({ message: 'User updated successfully', user });
+    );
+    res.send({ message: "User registered successfully", data: response.data });
   } catch (error) {
-    console.error('Error updating user:', error);
-    return res.status(500).json({ error: 'Internal server error' });
-  }
-});
-
-// Get all users endpoint
-app.get('/users', async (req, res) => {
-  try {
-      const getAllUsersQuery = 'SELECT * FROM wp_users';
-      const users = await queryDB(getAllUsersQuery);
-      const usersArray = users.map(user => ({
-          id: user.ID,
-          username: user.user_login,
-          email: user.user_email,
-      }));
-      return res.status(200).json(usersArray);
-  } catch (error) {
-      console.error('Error retrieving users:', error);
-      return res.status(500).json({ error: 'Internal server error' });
-  }
-});
-
-// Get single user endpoint
-app.get('/users/:id', async (req, res) => {
-  const userId = req.params.id;
-
-  try {
-      const getUserQuery = 'SELECT * FROM wp_users WHERE ID = ?';
-      const [user] = await queryDB(getUserQuery, [userId]);
-
-      if (!user) {
-          return res.status(404).json({ error: 'User not found' });
-      }
-      const userDetails = {
-          id: user.ID,
-          username: user.user_login,
-          email: user.user_email,
-      };
-      return res.status(200).json(userDetails);
-  } catch (error) {
-      console.error('Error retrieving user:', error);
-      return res.status(500).json({ error: 'Internal server error' });
-  }
-});
-
-// Delete user endpoint
-app.delete('/users/delete/:id', async (req, res) => {
-  const userId = req.params.id;
-
-  try {
-      const getUserQuery = 'SELECT * FROM wp_users WHERE ID = ?';
-      const [user] = await queryDB(getUserQuery, [userId]);
-      if (!user) {
-          return res.status(404).json({ error: 'User not found' });
-      }
-      const deleteUserQuery = 'DELETE FROM wp_users WHERE ID = ?';
-      await queryDB(deleteUserQuery, [userId]);
-      return res.status(200).json({ message: 'User deleted successfully' });
-  } catch (error) {
-      console.error('Error deleting user:', error);
-      return res.status(500).json({ error: 'Internal server error' });
-  }
-});
-
-
-// Function to execute MySQL queries
-function queryDB(sql, args) {
-    return new Promise((resolve, reject) => {
-      db.query(sql, args, (err, rows) => {
-        if (err) return reject(err);
-        resolve(rows);
-      });
+    console.error("Error registering user:", error.response.data);
+    res.send({
+      message: "User Registration Failed",
+      error: error.response.data,
     });
   }
+});
+
+// Login User
+app.post("/login", async (req, res) => {
+  const { username, password } = req.body;
+
+  try {
+    const authResponse = await axios.post(WORDPRESS_AUTH_TOKEN_API_URL, {
+      username,
+      password,
+    });
+
+    const authToken = authResponse.data.token;
+    const userdata = authResponse.data;
+    res.send({ data: userdata });
+  } catch (error) {
+    console.error("Error logging in:", error.response.data);
+    res.send({ message: "Login failed", error: error.response.data });
+  }
+});
+
+// Route to update a user by ID
+app.patch("/users/update/:id", async (req, res) => {
+  const userId = req.params.id;
+  const { username, email, password } = req.body;
+
+  const updatedUserData = {
+    username,
+    email,
+    password
+  };
+
+  try {
+    const authResponse = await axios.post(WORDPRESS_AUTH_TOKEN_API_URL, {
+      username: WORDPRESS_ADMIN_USERNAME,
+      password: WORDPRESS_ADMIN_PASSWORD,
+    });
+
+    const authToken = authResponse.data.token;
+
+    const response = await axios.patch(`${WORDPRESS_USERS_API_URL}/${userId}`, updatedUserData, {
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${authToken}`,
+      },
+    });
+
+    res.send(response.data);
+  } catch (error) {
+    console.error("Error updating user:", error.response.data);
+    res.send({
+      message: "Error Updating User",
+      error: error.response.data,
+    });
+  }
+});
+
+// Route to delete a user by ID
+app.delete("/users/delete/:id", async (req, res) => {
+  const userId = req.params.id;
+
+  try {
+    const authResponse = await axios.post(WORDPRESS_AUTH_TOKEN_API_URL, {
+      username: WORDPRESS_ADMIN_USERNAME,
+      password: WORDPRESS_ADMIN_PASSWORD,
+    });
+
+    const authToken = authResponse.data.token;
+    const response = await axios.delete(`${WORDPRESS_USERS_API_URL}/${userId}`, {
+      headers: {
+        Authorization: `Bearer ${authToken}`,
+      },
+    });
+
+    res.send(response.data);
+  } catch (error) {
+    console.error("Error deleting user:", error.response.data);
+    res.send({
+      message: "Error Deleting User",
+      error: error.response.data,
+    });
+  }
+});
 
 
-const PORT = 3000;
-app.listen(PORT, () => {
-  console.log(`Server running on port ${PORT}`);
+// Fetching All the Users Data
+app.get("/users", async (req, res) => {
+  try {
+    const response = await axios.get(WORDPRESS_USERS_API_URL);
+    res.send(response.data);
+  } catch (error) {
+    res.send({
+      message: "Error Fetching Wordpress All Users",
+      error: error.response.data,
+    });
+  }
+});
+
+// Fetching Single User
+app.get("/users/:id", async (req, res) => {
+  const userId = req.params.id;
+  console.log("userID : ", userId);
+  console.log("URL : ", `${WORDPRESS_USERS_API_URL}/${userId}`);
+
+  try {
+    const authResponse = await axios.post(WORDPRESS_AUTH_TOKEN_API_URL, {
+      username: WORDPRESS_ADMIN_USERNAME,
+      password: WORDPRESS_ADMIN_PASSWORD,
+    });
+
+    const authToken = authResponse.data.token;
+    const response = await axios.get(`${WORDPRESS_USERS_API_URL}/${userId}`, {
+      headers: {
+        Authorization: `Bearer ${authToken}`,
+      },
+    });
+    console.log("Getting Response : ", response);
+    res.send(response.data);
+  } catch (error) {
+    console.error("Error fetching WordPress user:", error);
+    res.send({
+      message: "Error Fetching to Single User",
+      error: error.response.data,
+    });
+  }
+});
+
+// Getting the All Products
+
+app.get("/products", async (req, res) => {
+  try {
+    const response = await WooCommerce.get("products");
+    res.send(response.data);
+  } catch (error) {
+    console.error("Error fetching products:", error.response.data);
+    res.status(500).send({
+      message: "Error Fetching Products",
+      error: error.response.data,
+    });
+  }
+});
+
+// Getting the Single Product
+
+app.get("/products/:id", async (req, res) => {
+  let productID = req.params.id;
+
+  try {
+    const response = await WooCommerce.get(`products/${productID}`);
+    res.send(response.data);
+  } catch (error) {
+    console.error("Error fetching products:", error.response.data);
+    res.status(500).send({
+      message: "Error Fetching Products",
+      error: error.response.data,
+    });
+  }
+});
+
+// Route to add a new product
+app.post("/products/add", async (req, res) => {
+  const { name, price, description, sku } = req.body;
+
+  const newProductData = {
+    name,
+    regular_price: price,
+    description,
+    sku,
+  };
+
+  try {
+    const response = await WooCommerce.post("products", newProductData);
+    res.send({
+      message: "Product is Added Successfully",
+      productAddedInfo: response.data,
+    });
+  } catch (error) {
+    console.error("Error adding product:", error.response.data);
+    res.send({
+      message: "Error Adding Product",
+      error: error.response.data,
+    });
+  }
+});
+
+// Route to update a product by ID
+app.patch("/products/update/:id", async (req, res) => {
+  const productId = req.params.id;
+  const { name, price, description, sku } = req.body;
+
+  const updatedProductData = {
+    name,
+    regular_price: price,
+    description,
+    sku,
+  };
+
+  try {
+    const response = await WooCommerce.patch(
+      `products/${productId}`,
+      updatedProductData
+    );
+    res.send({
+      message: "Product is Updated Successfully",
+      productUpdatedInfo: response.data,
+    });
+  } catch (error) {
+    console.error("Error updating product:", error.response.data);
+    res.send({
+      message: "Error Updating Product",
+      error: error.response.data,
+    });
+  }
+});
+
+// Route to delete a product by ID
+app.delete("/products/delete/:id", async (req, res) => {
+  const productId = req.params.id;
+  try {
+    const response = await WooCommerce.delete(`products/${productId}`, { force: true });
+    res.send({message : "Product is Deleted Successfully", productDeletedInfo : response.data});
+  } catch (error) {
+    console.error("Error deleting product:", error.response.data);
+    res.send({
+      message: "Error Deleting Product",
+      error: error.response.data,
+    });
+  }
+});
+
+// Running the Server on Port 4500
+
+app.listen(4500, () => {
+  console.log("Server is Running on Port 4500");
 });
